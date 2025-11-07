@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Smart Notes — Search</title>
+  <style>
+    :root{
+      --bg:#1E1E1E; --text:#E0E0E0; --muted:#A8A8A8; --card:#2A2A2A;
+      --border:#444; --accent:#007AFF; --accent-hover:#0056b3;
+    }
+    *{box-sizing:border-box}
+    body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial; background:var(--bg); color:var(--text);
+      margin:0; display:flex; justify-content:center; padding:32px 16px;}
+    .wrap{width:100%;max-width:920px}
+    header{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);padding-bottom:18px;margin-bottom:24px}
+    h1{font-size:20px;margin:0;color:white}
+    nav a{background:var(--card);color:var(--text);padding:8px 12px;border-radius:8px;text-decoration:none;margin-left:8px;font-size:14px}
+    .topbar{display:flex;gap:12px;align-items:center}
+    .search-row{display:flex;gap:0;margin-bottom:18px}
+    input[type="text"]{flex:1;padding:12px 14px;font-size:15px;border-radius:10px 0 0 10px;border:1px solid var(--border);background:var(--card);color:var(--text);outline:none}
+    input[type="text"]:focus{border-color:var(--accent)}
+    button.primary{padding:12px 18px;border-radius:0 10px 10px 0;border:none;background:var(--accent);color:#fff;cursor:pointer}
+    button.primary:hover{background:var(--accent-hover)}
+    #results{margin-top:16px}
+    .card{background:var(--card);border:1px solid var(--border);padding:18px;border-radius:10px;margin-bottom:12px}
+    .card h3{margin:0 0 8px;font-size:15px;word-break:break-all}
+    .snippet{font-size:14px;color:var(--text);white-space:pre-wrap;line-height:1.5;max-height:8.6em;overflow:hidden}
+    .row{display:flex;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap}
+    .link{color:var(--accent);cursor:pointer;text-decoration:underline}
+    .status{color:var(--muted);text-align:center;padding:30px 0}
+    .loader{display:inline-block;transform:translateY(4px)}
+    .small{font-size:13px;color:var(--muted)}
+    .controls{display:flex;gap:8px;align-items:center}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div>
+        <h1>Smart Notes</h1>
+        <div class="small">Search your uploaded PDFs & images (OCR text)</div>
+      </div>
+
+      <div class="topbar">
+        <nav>
+          <a href="upload.html">Upload</a>
+          <a href="dashboard.html">Dashboard</a>
+        </nav>
+      </div>
+    </header>
+
+    <div class="search-row">
+      <input id="q" type="text" placeholder="Type a word or phrase and press Enter / Search" />
+      <button id="searchBtn" class="primary">Search</button>
+    </div>
+
+    <div id="results"></div>
+  </div>
+
+  <script>
+    // -------------- CONFIG --------------
+    const API_BASE_URL = "http://13.50.245.48:8000"; // <-- REPLACE THIS
+    const SEARCH_URL = API_BASE_URL + "/search";
+    const DOWNLOAD_URL = API_BASE_URL + "/get-download-url";
+    // -------------- HELPERS --------------
+    const el = id => document.getElementById(id);
+    function makeLoader(label = "Loading...") {
+      return `<div class="status">${label} <span class="loader">⌛</span></div>`;
+    }
+    function fmtDate(ts) {
+      try {
+        const n = Number(ts);
+        if (!n) return "";
+        const d = new Date(n * (n < 1e12 ? 1000 : 1)); // allow seconds or ms
+        return d.toLocaleString();
+      } catch { return ""; }
+    }
+
+    // -------------- UI logic --------------
+    const resultsDiv = el("results");
+    const qInput = el("q");
+    const searchBtn = el("searchBtn");
+
+    async function performSearch() {
+      const q = qInput.value.trim();
+      if (!q) return;
+      resultsDiv.innerHTML = makeLoader("Searching...");
+      try {
+        const res = await fetch(`${SEARCH_URL}?query=${encodeURIComponent(q)}`, {cache: "no-store"});
+        if (!res.ok) throw new Error("Server error " + res.status);
+        const items = await res.json();
+        renderResults(items);
+      } catch (err) {
+        console.error(err);
+        resultsDiv.innerHTML = `<div class="status">Error searching. Check your API server logs or network. (${err.message})</div>`;
+      }
+    }
+
+    function renderResults(items) {
+      if (!items || items.length === 0) {
+        resultsDiv.innerHTML = `<div class="status">No results found.</div>`;
+        return;
+      }
+      resultsDiv.innerHTML = "";
+      items.forEach(item => {
+        const fileName = item.file_name || item.key || "unknown";
+        const text = item.extracted_text || "";
+        const snippet = text.length > 800 ? text.slice(0,800) + "..." : text;
+        const uploadedAt = item.uploaded_at || item.uploadedAt || item.created_at || item.timestamp;
+        const meta = uploadedAt ? `<div class="small">Uploaded: ${fmtDate(uploadedAt)}</div>` : "";
+        const card = document.createElement("div");
+        card.className = "card";
+        card.innerHTML = `
+          <h3>${escapeHtml(fileName)}</h3>
+          ${meta}
+          <div class="snippet">${escapeHtml(snippet)}</div>
+          <div class="row">
+            <span class="link download-link">Download</span>
+            <a class="link view-full" href="#" target="_blank">Open raw (new tab)</a>
+          </div>
+        `;
+        // download handler
+        card.querySelector(".download-link").addEventListener("click", async () => {
+          const dl = card.querySelector(".download-link");
+          dl.textContent = "Generating link...";
+          try {
+            const r = await fetch(`${DOWNLOAD_URL}?filename=${encodeURIComponent(fileName)}`);
+            const j = await r.json();
+            if (j.download_url) {
+              window.open(j.download_url, "_blank");
+              dl.textContent = "Download";
+            } else {
+              dl.textContent = "Error";
+              console.error(j);
+            }
+          } catch (e) {
+            console.error(e);
+            dl.textContent = "Error";
+          }
+        });
+
+        // open raw: use presigned GET as well
+        card.querySelector(".view-full").addEventListener("click", async (ev) => {
+          ev.preventDefault();
+          const a = ev.currentTarget;
+          a.textContent = "Generating...";
+          try {
+            const r = await fetch(`${DOWNLOAD_URL}?filename=${encodeURIComponent(fileName)}`);
+            const j = await r.json();
+            if (j.download_url) {
+              window.open(j.download_url, "_blank");
+              a.textContent = "Open raw (new tab)";
+            } else {
+              a.textContent = "Error";
+            }
+          } catch (e) {
+            console.error(e);
+            a.textContent = "Error";
+          }
+        });
+
+        resultsDiv.appendChild(card);
+      });
+    }
+
+    // small safe escaping
+    function escapeHtml(s){ return String(s||"").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+    // events
+    searchBtn.addEventListener("click", performSearch);
+    qInput.addEventListener("keyup", e => { if (e.key === "Enter") performSearch(); });
+
+    // focus input
+    qInput.focus();
+  </script>
+</body>
+</html>

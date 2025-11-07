@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Smart Notes — Upload</title>
+  <style>
+    :root{
+      --bg:#1E1E1E; --text:#E0E0E0; --muted:#A8A8A8; --card:#2A2A2A;
+      --border:#444; --accent:#007AFF; --accent-hover:#0056b3; --success:#34C759; --danger:#FF3B30;
+    }
+    *{box-sizing:border-box}
+    body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial; background:var(--bg); color:var(--text);
+      margin:0; display:flex; justify-content:center; padding:32px 16px;}
+    .wrap{width:100%;max-width:720px}
+    header{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);padding-bottom:18px;margin-bottom:24px}
+    h1{font-size:20px;margin:0}
+    nav a{background:var(--card);color:var(--text);padding:8px 12px;border-radius:8px;text-decoration:none;margin-left:8px;font-size:14px}
+    .box{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;text-align:center}
+    input[type=file]{background:transparent;color:var(--text);font-size:15px}
+    button{margin-top:12px;padding:10px 18px;border-radius:10px;border:none;background:var(--accent);color:white;cursor:pointer}
+    .status{margin-top:14px;font-size:14px}
+    .status.info{color:var(--muted)}
+    .status.success{color:var(--success)}
+    .status.error{color:var(--danger)}
+    .loader{display:inline-block;margin-left:8px}
+    .hint{font-size:13px;color:var(--muted);margin-top:8px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div><h1>Smart Notes — Upload</h1><div class="hint">Upload PDF or image (jpg/png). Files are stored in S3 and processed asynchronously.</div></div>
+      <div>
+        <nav>
+          <a href="search.html">Search</a>
+          <a href="dashboard.html">Dashboard</a>
+        </nav>
+      </div>
+    </header>
+
+    <div class="box">
+      <input id="file" type="file" accept=".pdf,.png,.jpg,.jpeg" />
+      <br>
+      <button id="uploadBtn">Upload</button>
+
+      <div id="status" class="status info">No file selected.</div>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE_URL = "http://13.50.245.48:8000"; // <-- REPLACE
+    const GET_UPLOAD = API_BASE_URL + "/get-upload-url";
+    const statusEl = document.getElementById("status");
+    const fileInput = document.getElementById("file");
+    const uploadBtn = document.getElementById("uploadBtn");
+
+    function setStatus(text, cls="info"){ statusEl.className = "status " + cls; statusEl.innerHTML = text; }
+
+    fileInput.addEventListener("change", () => {
+      if (fileInput.files.length) {
+        setStatus(`Selected file: ${fileInput.files[0].name}`, "info");
+      } else {
+        setStatus("No file selected.", "info");
+      }
+    });
+
+    uploadBtn.addEventListener("click", async () => {
+      const file = fileInput.files[0];
+      if (!file) { setStatus("Please choose a file first.", "error"); return; }
+
+      setStatus("Requesting upload credentials... <span class='loader'>⌛</span>", "info");
+
+      try {
+        // Request presigned POST + fallback PUT
+        const hintType = file.type || "";
+        const res = await fetch(`${GET_UPLOAD}?filename=${encodeURIComponent(file.name)}&content_type=${encodeURIComponent(hintType)}`);
+        if (!res.ok) throw new Error("Server error " + res.status);
+        const payload = await res.json();
+
+        // Prefer presigned POST if available
+        if (payload.upload_post && payload.upload_post.url && payload.upload_post.fields) {
+          setStatus("Uploading via presigned POST... <span class='loader'>⌛</span>", "info");
+          // Build form data
+          const formData = new FormData();
+          const fields = payload.upload_post.fields;
+          Object.keys(fields).forEach(k => formData.append(k, fields[k]));
+          // Important: S3 expects the file field to be named "file"
+          formData.append("file", file);
+
+          const uploadRes = await fetch(payload.upload_post.url, {
+            method: "POST",
+            body: formData
+          });
+
+          if (uploadRes.ok || uploadRes.status === 204) {
+            setStatus("Upload successful. File will be processed shortly.", "success");
+            fileInput.value = ""; // clear input
+          } else {
+            console.warn("POST upload failed, status:", uploadRes.status);
+            // fallback to PUT
+            await fallbackPut(payload.upload_put_url, file);
+          }
+        } else if (payload.upload_put_url) {
+          // No POST info — use PUT
+          await fallbackPut(payload.upload_put_url, file);
+        } else {
+          throw new Error("No upload information received");
+        }
+
+      } catch (err) {
+        console.error(err);
+        setStatus("Upload failed: " + (err.message || err), "error");
+      }
+    });
+
+    async function fallbackPut(putUrl, file) {
+      try {
+        setStatus("Uploading via PUT fallback... <span class='loader'>⌛</span>", "info");
+        const r = await fetch(putUrl, {
+          method: "PUT",
+          body: file,
+          // don't set content-type header here; browser will set automatically and that helps S3 CORS
+        });
+        if (r.ok) {
+          setStatus("Upload successful (PUT). Processing will start shortly.", "success");
+          fileInput.value = "";
+        } else {
+          throw new Error("PUT failed: " + r.status);
+        }
+      } catch (e) {
+        console.error(e);
+        setStatus("Upload fallback failed: " + (e.message || e), "error");
+      }
+    }
+  </script>
+</body>
+</html>

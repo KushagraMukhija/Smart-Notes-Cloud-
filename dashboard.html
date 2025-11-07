@@ -1,0 +1,194 @@
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Smart Notes — Dashboard</title>
+    <style>
+        :root{
+        --bg:#1E1E1E; --text:#E0E0E0; --muted:#A8A8A8; --card:#2A2A2A; --border:#444; --accent:#007AFF;
+        }
+        body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial;color:var(--text);background:var(--bg);margin:0;padding:28px;display:flex;justify-content:center}
+        .wrap{width:100%;max-width:980px}
+        header{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px}
+        header h1{margin:0;font-size:20px}
+        nav a{background:var(--card);color:var(--text);padding:8px 12px;border-radius:8px;text-decoration:none;margin-left:8px}
+        .controls{display:flex;gap:8px;align-items:center;margin-bottom:12px}
+        .controls select, .controls input{padding:8px;border-radius:8px;border:1px solid var(--border);background:transparent;color:var(--text)}
+        .list{display:flex;flex-direction:column;gap:10px}
+        .item{background:var(--card);border:1px solid var(--border);padding:14px;border-radius:10px;display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
+        .meta{color:var(--muted);font-size:13px}
+        .actions{display:flex;gap:8px;align-items:center}
+        .btn{background:transparent;border:1px solid var(--accent);color:var(--accent);padding:8px 10px;border-radius:8px;cursor:pointer;text-decoration:none}
+        .small{font-size:13px;color:var(--muted)}
+        .status{margin-top:18px;color:var(--muted)}
+    </style>
+    </head>
+    <body>
+    <div class="wrap">
+        <header>
+        <div>
+            <h1>Dashboard — All Notes</h1>
+            <div class="small">Shows items from DynamoDB. Use Download to get a presigned GET link.</div>
+        </div>
+        <nav>
+            <a href="search.html">Search</a>
+            <a href="upload.html">Upload</a>
+        </nav>
+        </header>
+
+        <div class="controls">
+        <input id="filterName" placeholder="Filter filename (substring)" />
+        <select id="sortBy">
+            <option value="uploaded_desc">Uploaded (new → old)</option>
+            <option value="uploaded_asc">Uploaded (old → new)</option>
+            <option value="name_asc">Filename A → Z</option>
+            <option value="name_desc">Filename Z → A</option>
+        </select>
+        <button id="refresh" class="btn">Refresh</button>
+        </div>
+
+        <div id="list" class="list"></div>
+        <div id="status" class="status">Loading...</div>
+    </div>
+
+    <script>
+        const API_BASE_URL = "http://13.50.245.48:8000"; // <-- REPLACE
+        const ALL_URL = API_BASE_URL + "/all-notes";
+        const DOWNLOAD_URL = API_BASE_URL + "/get-download-url";
+
+        const listEl = document.getElementById("list");
+        const statusEl = document.getElementById("status");
+        const filterInput = document.getElementById("filterName");
+        const sortSelect = document.getElementById("sortBy");
+        const refreshBtn = document.getElementById("refresh");
+
+        let cached = [];
+
+        function fmtDate(ts) {
+        try {
+            const n = Number(ts);
+            if (!n) return "";
+            const d = new Date(n * (n < 1e12 ? 1000 : 1));
+            return d.toLocaleString();
+        } catch { return ""; }
+        }
+
+        function render(list) {
+        listEl.innerHTML = "";
+        if (!list || list.length === 0) {
+            statusEl.textContent = "No items found.";
+            return;
+        }
+        statusEl.textContent = "";
+        list.forEach(item => {
+            const fn = item.file_name || item.key || "unknown";
+            const type = item.file_type || fn.split(".").pop() || "";
+            const uploaded = item.uploaded_at || item.uploadedAt || item.timestamp || "";
+            const snippet = (item.extracted_text || "").slice(0,200);
+
+            const div = document.createElement("div");
+            div.className = "item";
+            div.innerHTML = `
+            <div style="flex:1;min-width:0">
+                <strong style="display:block;word-break:break-all">${escapeHtml(fn)}</strong>
+                <div class="meta">Type: ${escapeHtml(type)} ${uploaded ? " • Uploaded: "+fmtDate(uploaded) : ""}</div>
+                <div style="margin-top:8px" class="small">${escapeHtml(snippet)}${(item.extracted_text||"").length > 200 ? "..." : ""}</div>
+            </div>
+            <div class="actions">
+                <button class="btn view">View</button>
+                <button class="btn download">Download</button>
+            </div>
+            `;
+            // handlers
+            div.querySelector(".download").addEventListener("click", async () => {
+            const btn = div.querySelector(".download");
+            btn.textContent = "Link...";
+            try {
+                const r = await fetch(`${DOWNLOAD_URL}?filename=${encodeURIComponent(fn)}`);
+                const j = await r.json();
+                if (j.download_url) {
+                window.open(j.download_url, "_blank");
+                btn.textContent = "Download";
+                } else {
+                btn.textContent = "Error";
+                }
+            } catch (e) {
+                console.error(e);
+                btn.textContent = "Error";
+            }
+            });
+
+            div.querySelector(".view").addEventListener("click", async () => {
+            const b = div.querySelector(".view");
+            b.textContent = "Opening...";
+            try {
+                const r = await fetch(`${DOWNLOAD_URL}?filename=${encodeURIComponent(fn)}`);
+                const j = await r.json();
+                if (j.download_url) {
+                window.open(j.download_url, "_blank");
+                }
+                b.textContent = "View";
+            } catch (e) {
+                console.error(e);
+                b.textContent = "Error";
+            }
+            });
+
+            listEl.appendChild(div);
+        });
+        }
+
+        function applyFiltersAndSort(items) {
+        let out = items.slice();
+        const filter = filterInput.value.trim().toLowerCase();
+        if (filter) out = out.filter(it => (it.file_name||"").toLowerCase().includes(filter));
+        const mode = sortSelect.value;
+        out.sort((a,b) => {
+            const aName = (a.file_name||"").toLowerCase();
+            const bName = (b.file_name||"").toLowerCase();
+            const aTime = Number(a.uploaded_at||a.uploadedAt||a.timestamp||0);
+            const bTime = Number(b.uploaded_at||b.uploadedAt||b.timestamp||0);
+            if (mode === "uploaded_desc") return bTime - aTime;
+            if (mode === "uploaded_asc") return aTime - bTime;
+            if (mode === "name_asc") return aName.localeCompare(bName);
+            if (mode === "name_desc") return bName.localeCompare(aName);
+            return 0;
+        });
+        return out;
+        }
+
+        async function fetchAll() {
+        statusEl.textContent = "Loading...";
+        try {
+            const res = await fetch(ALL_URL);
+            const json = await res.json();
+            if (!Array.isArray(json)) {
+            statusEl.textContent = "Error fetching notes.";
+            console.error(json);
+            return;
+            }
+            cached = json;
+            const out = applyFiltersAndSort(cached);
+            render(out);
+        } catch (e) {
+            console.error(e);
+            statusEl.textContent = "Error contacting server.";
+        }
+        }
+
+        filterInput.addEventListener("input", () => {
+        render(applyFiltersAndSort(cached));
+        });
+        sortSelect.addEventListener("change", () => {
+        render(applyFiltersAndSort(cached));
+        });
+        refreshBtn.addEventListener("click", () => fetchAll());
+
+        // initial
+        fetchAll();
+
+        function escapeHtml(s){ return String(s||"").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+    </script>
+    </body>
+    </html>
